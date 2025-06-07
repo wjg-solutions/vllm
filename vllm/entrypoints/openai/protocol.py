@@ -453,6 +453,10 @@ class ChatCompletionRequest(OpenAIBaseModel):
             temperature=temperature,
             length_penalty=self.length_penalty,
             include_stop_str_in_output=self.include_stop_str_in_output,
+            min_tokens=self.min_tokens,
+            early_stopping=getattr(self, 'early_stopping', True),
+            additional_eos_token_ids=getattr(self, 'additional_eos_token_ids', None),
+            eos_token_penalty=getattr(self, 'eos_token_penalty', 0.0),
         )
 
     def to_sampling_params(
@@ -903,6 +907,10 @@ class CompletionRequest(OpenAIBaseModel):
             temperature=temperature,
             length_penalty=self.length_penalty,
             include_stop_str_in_output=self.include_stop_str_in_output,
+            min_tokens=self.min_tokens,
+            early_stopping=getattr(self, 'early_stopping', True),
+            additional_eos_token_ids=getattr(self, 'additional_eos_token_ids', None),
+            eos_token_penalty=getattr(self, 'eos_token_penalty', 0.0),
         )
 
     def to_sampling_params(

@@ -14,7 +14,9 @@ from tqdm.auto import tqdm
 from typing_extensions import TypeVar, deprecated
 
 from vllm.beam_search import (BeamSearchInstance, BeamSearchOutput,
-                              BeamSearchSequence, get_beam_search_score)
+                              BeamSearchSequence, get_beam_search_score,
+                              EOSTokenConfig, detect_eos_tokens_from_tokenizer,
+                              detect_eos_tokens_from_generation_config)
 from vllm.config import (CompilationConfig, ModelDType, TokenizerMode,
                          is_init_field)
 from vllm.engine.arg_utils import (EngineArgs, HfOverrides, PoolerConfig,
@@ -533,7 +535,7 @@ class LLM:
         lora_request: Optional[Union[list[LoRARequest], LoRARequest]] = None,
     ) -> list[BeamSearchOutput]:
         """
-        Generate sequences using beam search.
+        Generate sequences using beam search with comprehensive EOS handling.
 
         Args:
             prompts: A list of prompts. Each prompt can be a string or a list
@@ -541,20 +543,41 @@ class LLM:
             params: The beam search parameters.
             lora_request: LoRA request to use for generation, if any.
         """
-        # TODO: how does beam search work together with length penalty,
-        # frequency, penalty, and stopping criteria, etc.?
         beam_width = params.beam_width
         max_tokens = params.max_tokens
         temperature = params.temperature
         ignore_eos = params.ignore_eos
         length_penalty = params.length_penalty
+        min_tokens = params.min_tokens
+        early_stopping = params.early_stopping
+        additional_eos_token_ids = params.additional_eos_token_ids or []
 
         lora_requests = self._get_beam_search_lora_requests(
             lora_request, prompts)
 
+        tokenizer = self.get_tokenizer()
+        
+        # Create comprehensive EOS configuration
+        eos_config = detect_eos_tokens_from_tokenizer(tokenizer)
+        eos_config.ignore_eos = ignore_eos
+        eos_config.min_tokens = min_tokens
+        eos_config.additional_eos_token_ids.update(additional_eos_token_ids)
+        
+        # Try to get additional EOS tokens from model config
+        try:
+            model_config = self.llm_engine.get_model_config()
+            if hasattr(model_config, 'hf_config') and hasattr(model_config.hf_config, 'generation_config'):
+                generation_eos_tokens = detect_eos_tokens_from_generation_config(
+                    model_config.hf_config.generation_config
+                )
+                eos_config.additional_eos_token_ids.update(generation_eos_tokens)
+        except Exception:
+            # Fallback if generation config is not available
+            pass
+
         def sort_beams_key(x: BeamSearchSequence) -> float:
             return get_beam_search_score(x.tokens, x.cum_logprob,
-                                         tokenizer.eos_token_id,
+                                         eos_config.primary_eos_token_id or 0,
                                          length_penalty)
 
         def create_tokens_prompt_from_beam(
@@ -570,7 +593,6 @@ class LLM:
                     "mm_processor_kwargs"] = beam.mm_processor_kwargs
             return TokensPrompt(**token_prompt_kwargs)
 
-        tokenizer = self.get_tokenizer()
         # generate 2 * beam_width candidates at each step
         # following the huggingface transformers implementation
         # at https://github.com/huggingface/transformers/blob/e15687fffe5c9d20598a19aeab721ae0a7580f8a/src/transformers/generation/beam_search.py#L534 # noqa
@@ -599,15 +621,33 @@ class LLM:
                     prompt_tokens,
                     lora_request=lora_req,
                     logprobs=None,
+                    eos_config=eos_config,
                     **mm_kwargs,
                 ), )
 
-        for _ in range(max_tokens):
-            all_beams: list[BeamSearchSequence] = list(
-                sum((instance.beams for instance in instances), []))
-            pos = [0] + list(
-                itertools.accumulate(
-                    len(instance.beams) for instance in instances))
+        for step in range(max_tokens):
+            # Check for early stopping if enabled
+            if early_stopping:
+                all_should_stop = True
+                for instance in instances:
+                    if not instance.should_early_stop(beam_width, length_penalty):
+                        all_should_stop = False
+                        break
+                if all_should_stop:
+                    break
+
+            # Get all active beams
+            all_beams: list[BeamSearchSequence] = []
+            for instance in instances:
+                all_beams.extend([beam for beam in instance.beams if not beam.is_finished])
+            
+            pos = [0]
+            current_pos = 0
+            for instance in instances:
+                active_beams = [beam for beam in instance.beams if not beam.is_finished]
+                current_pos += len(active_beams)
+                pos.append(current_pos)
+            
             instance_start_and_end: list[tuple[int, int]] = list(
                 zip(pos[:-1], pos[1:]))
 
@@ -628,7 +668,9 @@ class LLM:
 
             for (start, end), instance in zip(instance_start_and_end,
                                               instances):
+                instance.step()  # Advance step counter
                 instance_new_beams = []
+                
                 for i in range(start, end):
                     current_beam = all_beams[i]
                     result = output[i]
@@ -649,26 +691,45 @@ class LLM:
                                 mm_processor_kwargs=current_beam.
                                 mm_processor_kwargs)
 
-                            if token_id == tokenizer.eos_token_id and \
-                                not ignore_eos:
-                                instance.completed.append(new_beam)
+                            # Enhanced EOS handling
+                            if instance.should_terminate_beam(current_beam, token_id):
+                                instance.finalize_beam(new_beam, "stop")
+                                instance.add_completed_beam(new_beam)
                             else:
                                 instance_new_beams.append(new_beam)
+                
+                # Sort and keep top beams
                 sorted_beams = sorted(instance_new_beams,
                                       key=sort_beams_key,
                                       reverse=True)
                 instance.beams = sorted_beams[:beam_width]
+                
+                # Clean up finished beams to free memory
+                instance.cleanup_finished_beams()
 
         outputs = []
         for instance in instances:
-            instance.completed.extend(instance.beams)
-            sorted_completed = sorted(instance.completed,
-                                      key=sort_beams_key,
-                                      reverse=True)
-            best_beams = sorted_completed[:beam_width]
+            # Add any remaining active beams to completed
+            for beam in instance.beams:
+                if not beam.is_finished:
+                    instance.finalize_beam(beam, "length")
+                    instance.add_completed_beam(beam)
+            
+            # Get best completed beams
+            best_beams = instance.get_best_completed_beams(beam_width, length_penalty)
+            
+            # If we don't have enough completed beams, pad with remaining beams
+            if len(best_beams) < beam_width:
+                remaining_beams = sorted(instance.beams,
+                                       key=sort_beams_key,
+                                       reverse=True)
+                best_beams.extend(remaining_beams[:beam_width - len(best_beams)])
 
+            # Decode text for final beams
             for beam in best_beams:
-                beam.text = tokenizer.decode(beam.tokens)
+                if beam.text is None:
+                    beam.text = tokenizer.decode(beam.tokens)
+            
             outputs.append(BeamSearchOutput(sequences=best_beams))
 
         return outputs

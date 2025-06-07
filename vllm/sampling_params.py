@@ -600,3 +600,8 @@ class BeamSearchParams(
     temperature: float = 0.0
     length_penalty: float = 1.0
     include_stop_str_in_output: bool = False
+    # Enhanced EOS handling parameters
+    min_tokens: int = 0
+    early_stopping: bool = True
+    additional_eos_token_ids: Optional[list[int]] = None
+    eos_token_penalty: float = 0.0
