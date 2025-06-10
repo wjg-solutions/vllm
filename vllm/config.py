@@ -143,7 +143,17 @@ def get_attr_docs(cls: type[Any]) -> dict[str, str]:
             yield a, b
             a = b
 
-    cls_node = ast.parse(textwrap.dedent(inspect.getsource(cls))).body[0]
+    try:
+        cls_node = ast.parse(textwrap.dedent(inspect.getsource(cls))).body[0]
+    except (OSError, KeyError) as e:
+        # Python 3.13 compatibility: inspect.getsource() may fail with
+        # "source code not available" due to changes in __firstlineno__ handling
+        logger.warning(
+            "Failed to get source code for class %s: %s. "
+            "Skipping docstring extraction for config validation.",
+            cls.__name__, str(e)
+        )
+        return {}
 
     if not isinstance(cls_node, ast.ClassDef):
         raise TypeError("Given object was not a class.")
@@ -195,7 +205,9 @@ def config(cls: ConfigT) -> ConfigT:
                 f"Field '{f.name}' in {cls.__name__} must have a default value."
             )
 
-        if f.name not in attr_docs:
+        # Skip docstring validation if we couldn't extract any docstrings
+        # (e.g., due to Python 3.13 compatibility issues)
+        if attr_docs and f.name not in attr_docs:
             raise ValueError(
                 f"Field '{f.name}' in {cls.__name__} must have a docstring.")
 

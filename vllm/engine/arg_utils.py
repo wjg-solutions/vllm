@@ -187,9 +187,14 @@ def get_kwargs(cls: ConfigType) -> dict[str, Any]:
 
         # Get the help text for the field
         name = field.name
-        help = cls_docs[name].strip()
-        # Escape % for argparse
-        help = help.replace("%", "%%")
+        # Handle case where docstrings couldn't be extracted (e.g., Python 3.13 compatibility)
+        if name in cls_docs:
+            help = cls_docs[name].strip()
+            # Escape % for argparse
+            help = help.replace("%", "%%")
+        else:
+            # Fallback to a generic help message when docstring is not available
+            help = f"Configuration parameter for {name}"
 
         # Initialise the kwargs dictionary for the field
         kwargs[name] = {"default": default, "help": help}

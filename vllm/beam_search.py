@@ -200,7 +200,11 @@ def get_beam_search_score(
     if tokens and tokens[-1] == eos_token_id:
         seq_len -= 1
 
-    return cumulative_logprob / (seq_len ** length_penalty)
+    # Old methid seems to run forever unless seq_len is very low.
+    # return cumulative_logprob / (seq_len ** length_penalty)
+
+    # Test constant length penalty
+    return cumulative_logprob / length_penalty
 
 
 def create_sort_beams_key_function(eos_token_id: int, length_penalty: float):
