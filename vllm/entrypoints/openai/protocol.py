@@ -438,7 +438,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
         if server_beam_defaults is None:
             server_beam_defaults = {}
         
-        n = self.n if self.n is not None else server_beam_defaults.get('default_beam_width', 1)
+        n = self.n if self.n is not None else server_beam_defaults.get('beam_width', 1)
 
         # Use minimum of context window, user request & server limit.
         max_tokens = min(
@@ -451,8 +451,8 @@ class ChatCompletionRequest(OpenAIBaseModel):
                 "temperature", self._DEFAULT_SAMPLING_PARAMS["temperature"])
 
         # Use server defaults for beam search parameters if not specified
-        length_penalty = self.length_penalty if hasattr(self, 'length_penalty') else server_beam_defaults.get('default_length_penalty', 1.0)
-        early_stopping = getattr(self, 'early_stopping', server_beam_defaults.get('default_early_stopping', True))
+        length_penalty = self.length_penalty if hasattr(self, 'length_penalty') else server_beam_defaults.get('length_penalty', 1.0)
+        early_stopping = getattr(self, 'early_stopping', server_beam_defaults.get('early_stopping', True))
 
         return BeamSearchParams(
             beam_width=n,
@@ -914,7 +914,7 @@ class CompletionRequest(OpenAIBaseModel):
         if server_beam_defaults is None:
             server_beam_defaults = {}
         
-        n = self.n if self.n is not None else server_beam_defaults.get('default_beam_width', 1)
+        n = self.n if self.n is not None else server_beam_defaults.get('beam_width', 1)
 
         # Use minimum of context window, user request & server limit.
         max_tokens = min(
@@ -926,8 +926,8 @@ class CompletionRequest(OpenAIBaseModel):
             temperature = default_sampling_params.get("temperature", 1.0)
 
         # Use server defaults for beam search parameters if not specified
-        length_penalty = self.length_penalty if hasattr(self, 'length_penalty') else server_beam_defaults.get('default_length_penalty', 1.0)
-        early_stopping = getattr(self, 'early_stopping', server_beam_defaults.get('default_early_stopping', True))
+        length_penalty = self.length_penalty if hasattr(self, 'length_penalty') else server_beam_defaults.get('length_penalty', 1.0)
+        early_stopping = getattr(self, 'early_stopping', server_beam_defaults.get('early_stopping', True))
 
         return BeamSearchParams(
             beam_width=n,
