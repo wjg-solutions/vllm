@@ -635,22 +635,34 @@ class LLM:
                 if all_should_stop:
                     break
 
+            # Clean up finished beams first
+            for instance in instances:
+                instance.cleanup_finished_beams()
+            
             # Get all active beams
             all_beams: list[BeamSearchSequence] = []
             for instance in instances:
-                all_beams.extend([beam for beam in instance.beams if not beam.is_finished])
+                all_beams.extend(instance.beams)  # All beams should be active after cleanup
             
             pos = [0]
             current_pos = 0
             for instance in instances:
-                active_beams = [beam for beam in instance.beams if not beam.is_finished]
-                current_pos += len(active_beams)
+                current_pos += len(instance.beams)
                 pos.append(current_pos)
             
             instance_start_and_end: list[tuple[int, int]] = list(
                 zip(pos[:-1], pos[1:]))
 
             if len(all_beams) == 0:
+                break
+            
+            # Check if all instances have enough completed beams and no active beams
+            all_instances_done = True
+            for instance in instances:
+                if len(instance.beams) > 0 or len(instance.completed) < beam_width:
+                    all_instances_done = False
+                    break
+            if all_instances_done:
                 break
 
             # create the corresponding batch entries for prompt & optional lora
@@ -702,9 +714,6 @@ class LLM:
                                       key=sort_beams_key,
                                       reverse=True)
                 instance.beams = sorted_beams[:beam_width]
-                
-                # Clean up finished beams to free memory
-                instance.cleanup_finished_beams()
 
         outputs = []
         for instance in instances:

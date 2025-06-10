@@ -214,8 +214,6 @@ def get_beam_search_score(
     lp = ((k + seq_len) ** alpha) / ((k + 1) ** alpha)
     return cumulative_logprob / lp
 
-    # return cumulative_logprob
-
 
 def create_sort_beams_key_function(eos_token_id: int, length_penalty: float):
 
