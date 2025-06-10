@@ -438,7 +438,8 @@ class ChatCompletionRequest(OpenAIBaseModel):
         if server_beam_defaults is None:
             server_beam_defaults = {}
         
-        n = self.n if self.n is not None else server_beam_defaults.get('beam_width', 1)
+        # Use server default beam_width if n is not explicitly set (default is 1)
+        n = server_beam_defaults.get('beam_width', self.n) if self.n == 1 else self.n
 
         # Use minimum of context window, user request & server limit.
         max_tokens = min(
@@ -450,8 +451,8 @@ class ChatCompletionRequest(OpenAIBaseModel):
             temperature = default_sampling_params.get(
                 "temperature", self._DEFAULT_SAMPLING_PARAMS["temperature"])
 
-        # Use server defaults for beam search parameters if not specified
-        length_penalty = self.length_penalty if hasattr(self, 'length_penalty') else server_beam_defaults.get('length_penalty', 1.0)
+        # Use server defaults for beam search parameters if not explicitly set
+        length_penalty = server_beam_defaults.get('length_penalty', self.length_penalty) if self.length_penalty == 1.0 else self.length_penalty
         early_stopping = getattr(self, 'early_stopping', server_beam_defaults.get('early_stopping', True))
 
         return BeamSearchParams(
@@ -469,9 +470,9 @@ class ChatCompletionRequest(OpenAIBaseModel):
 
     def should_use_beam_search(self, server_beam_defaults: Optional[dict] = None) -> bool:
         """Determine if beam search should be used based on request and server defaults."""
-        # If explicitly set in request, use that
-        if self.use_beam_search is not None:
-            return self.use_beam_search
+        # If explicitly set in request to True, use that
+        if self.use_beam_search:
+            return True
         
         # If server default is set to use beam search, use that
         if server_beam_defaults and server_beam_defaults.get('use_beam_search', False):
@@ -914,7 +915,8 @@ class CompletionRequest(OpenAIBaseModel):
         if server_beam_defaults is None:
             server_beam_defaults = {}
         
-        n = self.n if self.n is not None else server_beam_defaults.get('beam_width', 1)
+        # Use server default beam_width if n is not explicitly set (default is 1)
+        n = server_beam_defaults.get('beam_width', self.n) if self.n == 1 else self.n
 
         # Use minimum of context window, user request & server limit.
         max_tokens = min(
@@ -925,8 +927,8 @@ class CompletionRequest(OpenAIBaseModel):
         if (temperature := self.temperature) is None:
             temperature = default_sampling_params.get("temperature", 1.0)
 
-        # Use server defaults for beam search parameters if not specified
-        length_penalty = self.length_penalty if hasattr(self, 'length_penalty') else server_beam_defaults.get('length_penalty', 1.0)
+        # Use server defaults for beam search parameters if not explicitly set
+        length_penalty = server_beam_defaults.get('length_penalty', self.length_penalty) if self.length_penalty == 1.0 else self.length_penalty
         early_stopping = getattr(self, 'early_stopping', server_beam_defaults.get('early_stopping', True))
 
         return BeamSearchParams(
@@ -944,9 +946,9 @@ class CompletionRequest(OpenAIBaseModel):
 
     def should_use_beam_search(self, server_beam_defaults: Optional[dict] = None) -> bool:
         """Determine if beam search should be used based on request and server defaults."""
-        # If explicitly set in request, use that
-        if self.use_beam_search is not None:
-            return self.use_beam_search
+        # If explicitly set in request to True, use that
+        if self.use_beam_search:
+            return True
         
         # If server default is set to use beam search, use that
         if server_beam_defaults and server_beam_defaults.get('use_beam_search', False):
