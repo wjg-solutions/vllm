@@ -172,14 +172,27 @@ class BeamSearchInstance:
         # Check if any active beam can potentially beat the worst completed beam
         for beam in self.beams:
             if not beam.is_finished:
-                # For active beams, use optimistic scoring with a margin for potential improvement
+                # For active beams, use optimistic scoring with a larger margin for potential improvement
                 current_score = get_beam_search_score(
                     beam.tokens, beam.cum_logprob,
                     self.eos_config.primary_eos_token_id or 0,
                     length_penalty
                 )
-                # Add margin to account for potential future token improvements
-                if current_score > worst_completed_score * 0.95:  # 5% margin
+                
+                # Use adaptive margin based on sequence length to counteract length penalty bias
+                # Longer sequences need more margin to account for potential improvements
+                seq_len = len(beam.tokens)
+                completed_len = len(best_completed[-1].tokens)
+                
+                # Base margin of 10% plus additional margin for length difference
+                base_margin = 0.90  # 10% margin
+                length_adjustment = max(0, (seq_len - completed_len) * 0.02)  # 2% per token difference
+                adaptive_margin = base_margin - length_adjustment
+                
+                # Ensure margin doesn't go below 70% to prevent overly aggressive early stopping
+                adaptive_margin = max(0.70, adaptive_margin)
+                
+                if current_score > worst_completed_score * adaptive_margin:
                     return False
         
         return True
