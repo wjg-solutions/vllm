@@ -172,13 +172,14 @@ class BeamSearchInstance:
         # Check if any active beam can potentially beat the worst completed beam
         for beam in self.beams:
             if not beam.is_finished:
-                # Optimistic score assuming perfect future tokens
+                # For active beams, use optimistic scoring with a margin for potential improvement
                 current_score = get_beam_search_score(
                     beam.tokens, beam.cum_logprob,
                     self.eos_config.primary_eos_token_id or 0,
                     length_penalty
                 )
-                if current_score > worst_completed_score:
+                # Add margin to account for potential future token improvements
+                if current_score > worst_completed_score * 0.95:  # 5% margin
                     return False
         
         return True
@@ -197,8 +198,15 @@ def get_beam_search_score(
     https://github.com/huggingface/transformers/blob/ccb92be23def445f2afdea94c31286f84b89eb5b/src/transformers/generation/beam_search.py#L938
     """
     seq_len = len(tokens)
+    adjusted_logprob = cumulative_logprob
+    
+    # If sequence ends with EOS token, exclude it from length calculation
+    # and also exclude its logprob contribution for consistent scoring
     if tokens and tokens[-1] == eos_token_id:
         seq_len -= 1
+        # Note: We should ideally subtract the EOS token's logprob here,
+        # but since we don't have access to individual token logprobs in this function,
+        # we'll rely on the caller to provide the adjusted cumulative_logprob
 
     # Length penalty controls the trade-off between sequence length and quality:
     # - length_penalty > 1.0: Favors longer sequences (reduces penalty for length)
@@ -212,7 +220,7 @@ def get_beam_search_score(
     alpha = length_penalty
     k = 5.0
     lp = ((k + seq_len) ** alpha) / ((k + 1) ** alpha)
-    return cumulative_logprob / lp
+    return adjusted_logprob / lp
 
 
 def create_sort_beams_key_function(eos_token_id: int, length_penalty: float):

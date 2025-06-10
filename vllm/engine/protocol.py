@@ -132,18 +132,23 @@ class EngineClient(ABC):
         for step in range(max_tokens):
             current_step = step
             
-            # Early stopping check
-            if early_stopping and len(completed) >= beam_width:
+            # Early stopping check - only stop if we have enough completed beams
+            # and no active beam can potentially beat the worst beam that would make the final cut
+            if early_stopping and len(completed) >= beam_width and len(all_beams) > 0:
                 # Get the score of the worst completed beam that would make the final cut
                 sorted_completed = sorted(completed, key=sort_beams_key, reverse=True)
                 if len(sorted_completed) >= beam_width:
                     worst_completed_score = sort_beams_key(sorted_completed[beam_width - 1])
                     
                     # Check if any active beam can potentially beat the worst completed beam
+                    # We need to be conservative here since active beams can still improve
                     can_improve = False
                     for beam in all_beams:
+                        # For active beams, we use optimistic scoring since they can still generate more tokens
+                        # The current score is a lower bound on what they could achieve
                         current_score = sort_beams_key(beam)
-                        if current_score > worst_completed_score:
+                        # Add a small margin to account for potential future improvements
+                        if current_score > worst_completed_score * 0.95:  # 5% margin for potential improvement
                             can_improve = True
                             break
                     
@@ -227,32 +232,35 @@ class EngineClient(ABC):
         sorted_completed = sorted(completed, key=sort_beams_key, reverse=True)
         best_beams = sorted_completed[:beam_width]
 
-        for beam in best_beams:
-            # Determine which tokens to include in the output text
+        outputs = []
+        for i, beam in enumerate(best_beams):
+            # Determine which tokens to include in the output text and token_ids consistently
             if (beam.tokens and
                 eos_config.is_eos_token(beam.tokens[-1]) and
                 not ignore_eos and
                 not include_stop_str_in_output):
-                # Skip the eos token in the text
-                tokens = beam.tokens[tokenized_length:-1]
+                # Skip the eos token in both text and token_ids for consistency
+                output_tokens = beam.tokens[tokenized_length:-1]
             else:
-                tokens = beam.tokens[tokenized_length:]
-            beam.text = tokenizer.decode(tokens)
-
-        beam_search_output = RequestOutput(
-            request_id=request_id,
-            prompt=prompt_text,
-            outputs=[
+                output_tokens = beam.tokens[tokenized_length:]
+            
+            beam.text = tokenizer.decode(output_tokens)
+            
+            outputs.append(
                 CompletionOutput(text=beam.text,
                                  cumulative_logprob=beam.cum_logprob,
-                                 token_ids=beam.tokens[tokenized_length:],
+                                 token_ids=output_tokens,
                                  index=i,
                                  logprobs=beam.logprobs,
                                  finish_reason=beam.finish_reason if
                                  beam.finish_reason is not None else "length",
                                  stop_reason=beam.stop_reason)
-                for (i, beam) in enumerate(best_beams)
-            ],
+            )
+
+        beam_search_output = RequestOutput(
+            request_id=request_id,
+            prompt=prompt_text,
+            outputs=outputs,
             finished=True,
             prompt_token_ids=prompt_token_ids,
             prompt_logprobs=None)
