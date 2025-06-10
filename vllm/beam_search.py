@@ -200,10 +200,7 @@ def get_beam_search_score(
     if tokens and tokens[-1] == eos_token_id:
         seq_len -= 1
 
-    #return cumulative_logprob / (seq_len**length_penalty)
-
-    # Only use length_penalty for long seq_len seems to run forever
-    return cumulative_logprob / (length_penalty)
+    return cumulative_logprob / (seq_len ** length_penalty)
 
 
 def create_sort_beams_key_function(eos_token_id: int, length_penalty: float):
