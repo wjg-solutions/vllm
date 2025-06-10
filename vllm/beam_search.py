@@ -200,11 +200,14 @@ def get_beam_search_score(
     if tokens and tokens[-1] == eos_token_id:
         seq_len -= 1
 
-    # Old methid seems to run forever unless seq_len is very low.
-    # return cumulative_logprob / (seq_len ** length_penalty)
+    # GNMT-style length penalty (Wu et al., 2016)
+    # length_penalty parameter is used as alpha; k is fixed at 5.0
+    # alpha = length_penalty
+    # k = 5.0
+    # lp = ((k + seq_len) ** alpha) / ((k + 1) ** alpha)
+    # return cumulative_logprob / lp
 
-    # Test constant length penalty
-    return cumulative_logprob / length_penalty
+    return cumulative_logprob
 
 
 def create_sort_beams_key_function(eos_token_id: int, length_penalty: float):
