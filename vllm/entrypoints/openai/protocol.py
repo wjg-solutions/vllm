@@ -427,14 +427,18 @@ class ChatCompletionRequest(OpenAIBaseModel):
     def to_beam_search_params(
             self,
             default_max_tokens: int,
-            default_sampling_params: Optional[dict] = None
+            default_sampling_params: Optional[dict] = None,
+            server_beam_defaults: Optional[dict] = None
     ) -> BeamSearchParams:
         # TODO(#9845): remove max_tokens when field is removed from OpenAI API
         max_tokens = self.max_completion_tokens or self.max_tokens
 
         if default_sampling_params is None:
             default_sampling_params = {}
-        n = self.n if self.n is not None else 1
+        if server_beam_defaults is None:
+            server_beam_defaults = {}
+        
+        n = self.n if self.n is not None else server_beam_defaults.get('default_beam_width', 1)
 
         # Use minimum of context window, user request & server limit.
         max_tokens = min(
@@ -446,18 +450,35 @@ class ChatCompletionRequest(OpenAIBaseModel):
             temperature = default_sampling_params.get(
                 "temperature", self._DEFAULT_SAMPLING_PARAMS["temperature"])
 
+        # Use server defaults for beam search parameters if not specified
+        length_penalty = self.length_penalty if hasattr(self, 'length_penalty') else server_beam_defaults.get('default_length_penalty', 1.0)
+        early_stopping = getattr(self, 'early_stopping', server_beam_defaults.get('default_early_stopping', True))
+
         return BeamSearchParams(
             beam_width=n,
             max_tokens=max_tokens,
             ignore_eos=self.ignore_eos,
             temperature=temperature,
-            length_penalty=self.length_penalty,
+            length_penalty=length_penalty,
             include_stop_str_in_output=self.include_stop_str_in_output,
             min_tokens=self.min_tokens,
-            early_stopping=getattr(self, 'early_stopping', True),
+            early_stopping=early_stopping,
             additional_eos_token_ids=getattr(self, 'additional_eos_token_ids', None),
             eos_token_penalty=getattr(self, 'eos_token_penalty', 0.0),
         )
+
+    def should_use_beam_search(self, server_beam_defaults: Optional[dict] = None) -> bool:
+        """Determine if beam search should be used based on request and server defaults."""
+        # If explicitly set in request, use that
+        if self.use_beam_search is not None:
+            return self.use_beam_search
+        
+        # If server default is set to use beam search, use that
+        if server_beam_defaults and server_beam_defaults.get('use_beam_search', False):
+            return True
+            
+        # Default to False
+        return False
 
     def to_sampling_params(
         self,
@@ -883,13 +904,17 @@ class CompletionRequest(OpenAIBaseModel):
     def to_beam_search_params(
             self,
             default_max_tokens: int,
-            default_sampling_params: Optional[dict] = None
+            default_sampling_params: Optional[dict] = None,
+            server_beam_defaults: Optional[dict] = None
     ) -> BeamSearchParams:
         max_tokens = self.max_tokens
 
         if default_sampling_params is None:
             default_sampling_params = {}
-        n = self.n if self.n is not None else 1
+        if server_beam_defaults is None:
+            server_beam_defaults = {}
+        
+        n = self.n if self.n is not None else server_beam_defaults.get('default_beam_width', 1)
 
         # Use minimum of context window, user request & server limit.
         max_tokens = min(
@@ -900,18 +925,35 @@ class CompletionRequest(OpenAIBaseModel):
         if (temperature := self.temperature) is None:
             temperature = default_sampling_params.get("temperature", 1.0)
 
+        # Use server defaults for beam search parameters if not specified
+        length_penalty = self.length_penalty if hasattr(self, 'length_penalty') else server_beam_defaults.get('default_length_penalty', 1.0)
+        early_stopping = getattr(self, 'early_stopping', server_beam_defaults.get('default_early_stopping', True))
+
         return BeamSearchParams(
             beam_width=n,
             max_tokens=max_tokens,
             ignore_eos=self.ignore_eos,
             temperature=temperature,
-            length_penalty=self.length_penalty,
+            length_penalty=length_penalty,
             include_stop_str_in_output=self.include_stop_str_in_output,
             min_tokens=self.min_tokens,
-            early_stopping=getattr(self, 'early_stopping', True),
+            early_stopping=early_stopping,
             additional_eos_token_ids=getattr(self, 'additional_eos_token_ids', None),
             eos_token_penalty=getattr(self, 'eos_token_penalty', 0.0),
         )
+
+    def should_use_beam_search(self, server_beam_defaults: Optional[dict] = None) -> bool:
+        """Determine if beam search should be used based on request and server defaults."""
+        # If explicitly set in request, use that
+        if self.use_beam_search is not None:
+            return self.use_beam_search
+        
+        # If server default is set to use beam search, use that
+        if server_beam_defaults and server_beam_defaults.get('use_beam_search', False):
+            return True
+            
+        # Default to False
+        return False
 
     def to_sampling_params(
         self,

@@ -157,9 +157,12 @@ class OpenAIServingCompletion(OpenAIServing):
                     assert_never(engine_prompt)
                 default_max_tokens = self.max_model_len - input_length
 
-                if request.use_beam_search:
+                # Get server beam defaults from app state
+                server_beam_defaults = getattr(raw_request.app.state, 'server_beam_defaults', None) if raw_request else None
+                
+                if request.should_use_beam_search(server_beam_defaults):
                     sampling_params = request.to_beam_search_params(
-                        default_max_tokens, self.default_sampling_params)
+                        default_max_tokens, self.default_sampling_params, server_beam_defaults)
                 else:
                     sampling_params = request.to_sampling_params(
                         default_max_tokens,

@@ -280,6 +280,29 @@ def make_arg_parser(parser: FlexibleArgumentParser) -> FlexibleArgumentParser:
         "If set to True, enable tracking server_load_metrics in the app state."
     )
 
+    # Beam search arguments
+    parser.add_argument(
+        "--default-use-beam-search",
+        action='store_true',
+        default=False,
+        help="Enable beam search by default for all requests that don't "
+        "explicitly specify use_beam_search.")
+    parser.add_argument(
+        "--default-beam-width",
+        type=int,
+        default=1,
+        help="Default beam width for beam search when enabled.")
+    parser.add_argument(
+        "--default-length-penalty",
+        type=float,
+        default=1.0,
+        help="Default length penalty for beam search scoring.")
+    parser.add_argument(
+        "--default-early-stopping",
+        action='store_true',
+        default=True,
+        help="Default early stopping behavior for beam search.")
+
     return parser
 
 
