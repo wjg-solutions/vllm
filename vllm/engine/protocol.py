@@ -5,7 +5,9 @@ import asyncio
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator, Mapping, Optional
 
-from vllm.beam_search import BeamSearchSequence, create_sort_beams_key_function
+from vllm.beam_search import (BeamSearchSequence, create_sort_beams_key_function,
+                              EOSTokenConfig, detect_eos_tokens_from_tokenizer,
+                              get_beam_search_score)
 from vllm.config import DecodingConfig, ModelConfig, VllmConfig
 from vllm.core.scheduler import SchedulerOutputs
 from vllm.inputs.data import PromptType, TokensPrompt
@@ -75,6 +77,9 @@ class EngineClient(ABC):
         temperature = params.temperature
         length_penalty = params.length_penalty
         include_stop_str_in_output = params.include_stop_str_in_output
+        min_tokens = getattr(params, 'min_tokens', 0)
+        early_stopping = getattr(params, 'early_stopping', True)
+        additional_eos_token_ids = getattr(params, 'additional_eos_token_ids', []) or []
 
         preprocessor = await self.get_input_preprocessor()
         tokenizer_group = preprocessor.get_tokenizer_group()
@@ -95,8 +100,18 @@ class EngineClient(ABC):
 
         tokenized_length = len(prompt_token_ids)
 
-        sort_beams_key = create_sort_beams_key_function(
-            tokenizer.eos_token_id, length_penalty)
+        # Create comprehensive EOS configuration
+        eos_config = detect_eos_tokens_from_tokenizer(tokenizer)
+        eos_config.ignore_eos = ignore_eos
+        eos_config.min_tokens = min_tokens
+        eos_config.additional_eos_token_ids.update(additional_eos_token_ids)
+
+        def sort_beams_key(beam: BeamSearchSequence) -> float:
+            return get_beam_search_score(
+                beam.tokens, beam.cum_logprob,
+                eos_config.primary_eos_token_id or 0,
+                length_penalty
+            )
 
         beam_search_params = SamplingParams(
             logprobs=2 * beam_width,
@@ -112,8 +127,32 @@ class EngineClient(ABC):
                                lora_request=lora_request)
         ]
         completed = []
+        current_step = 0
 
-        for _ in range(max_tokens):
+        for step in range(max_tokens):
+            current_step = step
+            
+            # Early stopping check
+            if early_stopping and len(completed) >= beam_width:
+                # Get the score of the worst completed beam that would make the final cut
+                sorted_completed = sorted(completed, key=sort_beams_key, reverse=True)
+                if len(sorted_completed) >= beam_width:
+                    worst_completed_score = sort_beams_key(sorted_completed[beam_width - 1])
+                    
+                    # Check if any active beam can potentially beat the worst completed beam
+                    can_improve = False
+                    for beam in all_beams:
+                        current_score = sort_beams_key(beam)
+                        if current_score > worst_completed_score:
+                            can_improve = True
+                            break
+                    
+                    if not can_improve:
+                        break
+            
+            if len(all_beams) == 0:
+                break
+
             prompts_batch, lora_req_batch = zip(*[(
                 TokensPrompt(prompt_token_ids=beam.tokens,
                              multi_modal_data=beam.multi_modal_data,
@@ -123,10 +162,10 @@ class EngineClient(ABC):
 
             tasks = []
 
-            request_id = f"beam_search-{random_uuid()}"
+            step_request_id = f"beam_search-{random_uuid()}"
             for i, (individual_prompt,
                     lora_req) in enumerate(zip(prompts_batch, lora_req_batch)):
-                request_id_item = f"{request_id}-{i}"
+                request_id_item = f"{step_request_id}-{i}"
                 task = asyncio.create_task(
                     collect_from_async_generator(
                         self.generate(individual_prompt,
@@ -146,43 +185,55 @@ class EngineClient(ABC):
                 if result.outputs[0].logprobs is not None:
                     logprobs = result.outputs[0].logprobs[0]
                     for token_id, logprob_obj in logprobs.items():
-                        if token_id == tokenizer.eos_token_id and \
-                            not ignore_eos:
-                            completed.append(
-                                BeamSearchSequence(
-                                    tokens=current_beam.tokens +
-                                    [token_id] if include_stop_str_in_output
-                                    else current_beam.tokens,
-                                    logprobs=current_beam.logprobs +
-                                    [logprobs],
-                                    cum_logprob=current_beam.cum_logprob +
-                                    logprob_obj.logprob,
-                                    finish_reason="stop",
-                                    stop_reason=tokenizer.eos_token_id))
+                        new_beam = BeamSearchSequence(
+                            tokens=current_beam.tokens + [token_id],
+                            logprobs=current_beam.logprobs + [logprobs],
+                            lora_request=current_beam.lora_request,
+                            cum_logprob=current_beam.cum_logprob + logprob_obj.logprob,
+                            multi_modal_data=current_beam.multi_modal_data,
+                            mm_processor_kwargs=current_beam.mm_processor_kwargs
+                        )
+                        
+                        # Enhanced EOS handling
+                        if eos_config.is_eos_token(token_id) and not ignore_eos:
+                            # Check minimum token requirement (only count generated tokens, not prompt)
+                            generated_tokens = len(new_beam.tokens) - tokenized_length
+                            if generated_tokens >= min_tokens:
+                                new_beam.finish_reason = "stop"
+                                new_beam.stop_reason = token_id
+                                new_beam.is_finished = True
+                                new_beam.finished_step = current_step
+                                
+                                completed.append(new_beam)
+                            else:
+                                # Continue generation even with EOS if min_tokens not met
+                                new_beams.append(new_beam)
                         else:
-                            new_beams.append(
-                                BeamSearchSequence(
-                                    tokens=current_beam.tokens + [token_id],
-                                    logprobs=current_beam.logprobs +
-                                    [logprobs],
-                                    lora_request=current_beam.lora_request,
-                                    cum_logprob=current_beam.cum_logprob +
-                                    logprob_obj.logprob,
-                                    multi_modal_data=current_beam.
-                                    multi_modal_data,
-                                    mm_processor_kwargs=current_beam.
-                                    mm_processor_kwargs))
+                            new_beams.append(new_beam)
 
+            # Sort and keep top beams
             sorted_beams = sorted(new_beams, key=sort_beams_key, reverse=True)
             all_beams = sorted_beams[:beam_width]
 
-        completed.extend(all_beams)
+        # Add any remaining active beams to completed
+        for beam in all_beams:
+            if not beam.is_finished:
+                beam.finish_reason = "length"
+                beam.is_finished = True
+                beam.finished_step = current_step
+            completed.append(beam)
+
+        # Get best completed beams
         sorted_completed = sorted(completed, key=sort_beams_key, reverse=True)
         best_beams = sorted_completed[:beam_width]
 
         for beam in best_beams:
-            if (beam.tokens[-1] == tokenizer.eos_token_id and not ignore_eos):
-                # Skip the eos token in the text.
+            # Determine which tokens to include in the output text
+            if (beam.tokens and
+                eos_config.is_eos_token(beam.tokens[-1]) and
+                not ignore_eos and
+                not include_stop_str_in_output):
+                # Skip the eos token in the text
                 tokens = beam.tokens[tokenized_length:-1]
             else:
                 tokens = beam.tokens[tokenized_length:]
