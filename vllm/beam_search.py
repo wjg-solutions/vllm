@@ -200,14 +200,21 @@ def get_beam_search_score(
     if tokens and tokens[-1] == eos_token_id:
         seq_len -= 1
 
+    # Length penalty controls the trade-off between sequence length and quality:
+    # - length_penalty > 1.0: Favors longer sequences (reduces penalty for length)
+    # - length_penalty = 1.0: No length penalty applied (default behavior)
+    # - length_penalty < 1.0: Favors shorter sequences (increases penalty for length)
+    # This helps prevent the model from generating overly short or long sequences
+    # by normalizing the cumulative log probability by a length-dependent factor.
+    
     # GNMT-style length penalty (Wu et al., 2016)
     # length_penalty parameter is used as alpha; k is fixed at 5.0
-    # alpha = length_penalty
-    # k = 5.0
-    # lp = ((k + seq_len) ** alpha) / ((k + 1) ** alpha)
-    # return cumulative_logprob / lp
+    alpha = length_penalty
+    k = 5.0
+    lp = ((k + seq_len) ** alpha) / ((k + 1) ** alpha)
+    return cumulative_logprob / lp
 
-    return cumulative_logprob
+    # return cumulative_logprob
 
 
 def create_sort_beams_key_function(eos_token_id: int, length_penalty: float):
