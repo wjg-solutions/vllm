@@ -453,7 +453,6 @@ class ChatCompletionRequest(OpenAIBaseModel):
 
         # Use server defaults for beam search parameters if not explicitly set
         length_penalty = server_beam_defaults.get('length_penalty', self.length_penalty) if self.length_penalty == 1.0 else self.length_penalty
-        early_stopping = getattr(self, 'early_stopping', server_beam_defaults.get('early_stopping', True))
 
         return BeamSearchParams(
             beam_width=n,
@@ -463,7 +462,6 @@ class ChatCompletionRequest(OpenAIBaseModel):
             length_penalty=length_penalty,
             include_stop_str_in_output=self.include_stop_str_in_output,
             min_tokens=self.min_tokens,
-            early_stopping=early_stopping,
             additional_eos_token_ids=getattr(self, 'additional_eos_token_ids', None),
             eos_token_penalty=getattr(self, 'eos_token_penalty', 0.0),
         )
@@ -929,7 +927,6 @@ class CompletionRequest(OpenAIBaseModel):
 
         # Use server defaults for beam search parameters if not explicitly set
         length_penalty = server_beam_defaults.get('length_penalty', self.length_penalty) if self.length_penalty == 1.0 else self.length_penalty
-        early_stopping = getattr(self, 'early_stopping', server_beam_defaults.get('early_stopping', True))
 
         return BeamSearchParams(
             beam_width=n,
@@ -939,7 +936,6 @@ class CompletionRequest(OpenAIBaseModel):
             length_penalty=length_penalty,
             include_stop_str_in_output=self.include_stop_str_in_output,
             min_tokens=self.min_tokens,
-            early_stopping=early_stopping,
             additional_eos_token_ids=getattr(self, 'additional_eos_token_ids', None),
             eos_token_penalty=getattr(self, 'eos_token_penalty', 0.0),
         )

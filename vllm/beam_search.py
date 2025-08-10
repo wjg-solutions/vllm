@@ -152,50 +152,6 @@ class BeamSearchInstance:
         
         return sorted_completed[:beam_width]
     
-    def should_early_stop(self, beam_width: int, length_penalty: float = 1.0) -> bool:
-        """Check if beam search should stop early due to sufficient completed beams."""
-        if len(self.completed) < beam_width:
-            return False
-        
-        # Get the score of the worst completed beam that would make the final cut
-        best_completed = self.get_best_completed_beams(beam_width, length_penalty)
-        if len(best_completed) < beam_width:
-            return False
-        
-        worst_completed_score = get_beam_search_score(
-            best_completed[-1].tokens,
-            best_completed[-1].cum_logprob,
-            self.eos_config.primary_eos_token_id or 0,
-            length_penalty
-        )
-        
-        # Check if any active beam can potentially beat the worst completed beam
-        for beam in self.beams:
-            if not beam.is_finished:
-                # For active beams, use optimistic scoring with a larger margin for potential improvement
-                current_score = get_beam_search_score(
-                    beam.tokens, beam.cum_logprob,
-                    self.eos_config.primary_eos_token_id or 0,
-                    length_penalty
-                )
-                
-                # Use adaptive margin based on sequence length to counteract length penalty bias
-                # Longer sequences need more margin to account for potential improvements
-                seq_len = len(beam.tokens)
-                completed_len = len(best_completed[-1].tokens)
-                
-                # Base margin of 10% plus additional margin for length difference
-                base_margin = 0.90  # 10% margin
-                length_adjustment = max(0, (seq_len - completed_len) * 0.02)  # 2% per token difference
-                adaptive_margin = base_margin - length_adjustment
-                
-                # Ensure margin doesn't go below 70% to prevent overly aggressive early stopping
-                adaptive_margin = max(0.70, adaptive_margin)
-                
-                if current_score > worst_completed_score * adaptive_margin:
-                    return False
-        
-        return True
 
 
 def get_beam_search_score(
@@ -204,36 +160,14 @@ def get_beam_search_score(
     eos_token_id: int,
     length_penalty: float = 1.0,
 ) -> float:
-    """Calculate the beam search score with length penalty.
-
-    Adapted from
-
-    https://github.com/huggingface/transformers/blob/ccb92be23def445f2afdea94c31286f84b89eb5b/src/transformers/generation/beam_search.py#L938
+    """Calculate the beam search score without length penalty.
+    
+    Returns the raw cumulative log probability for fair comparison
+    between beams of different lengths.
     """
-    seq_len = len(tokens)
-    adjusted_logprob = cumulative_logprob
-    
-    # If sequence ends with EOS token, exclude it from length calculation
-    # and also exclude its logprob contribution for consistent scoring
-    if tokens and tokens[-1] == eos_token_id:
-        seq_len -= 1
-        # Note: We should ideally subtract the EOS token's logprob here,
-        # but since we don't have access to individual token logprobs in this function,
-        # we'll rely on the caller to provide the adjusted cumulative_logprob
-
-    # Length penalty controls the trade-off between sequence length and quality:
-    # - length_penalty > 1.0: Favors longer sequences (reduces penalty for length)
-    # - length_penalty = 1.0: No length penalty applied (default behavior)
-    # - length_penalty < 1.0: Favors shorter sequences (increases penalty for length)
-    # This helps prevent the model from generating overly short or long sequences
-    # by normalizing the cumulative log probability by a length-dependent factor.
-    
-    # GNMT-style length penalty (Wu et al., 2016)
-    # length_penalty parameter is used as alpha; k is fixed at 5.0
-    alpha = length_penalty
-    k = 5.0
-    lp = ((k + seq_len) ** alpha) / ((k + 1) ** alpha)
-    return adjusted_logprob / lp
+    # Simply return the cumulative log probability without any length normalization
+    # This allows beams to be ranked purely by their likelihood
+    return cumulative_logprob
 
 
 def create_sort_beams_key_function(eos_token_id: int, length_penalty: float):

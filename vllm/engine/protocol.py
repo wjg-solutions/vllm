@@ -78,7 +78,6 @@ class EngineClient(ABC):
         length_penalty = params.length_penalty
         include_stop_str_in_output = params.include_stop_str_in_output
         min_tokens = getattr(params, 'min_tokens', 0)
-        early_stopping = getattr(params, 'early_stopping', True)
         additional_eos_token_ids = getattr(params, 'additional_eos_token_ids', []) or []
 
         preprocessor = await self.get_input_preprocessor()
@@ -132,29 +131,6 @@ class EngineClient(ABC):
         for step in range(max_tokens):
             current_step = step
             
-            # Early stopping check - only stop if we have enough completed beams
-            # and no active beam can potentially beat the worst beam that would make the final cut
-            if early_stopping and len(completed) >= beam_width and len(all_beams) > 0:
-                # Get the score of the worst completed beam that would make the final cut
-                sorted_completed = sorted(completed, key=sort_beams_key, reverse=True)
-                if len(sorted_completed) >= beam_width:
-                    worst_completed_score = sort_beams_key(sorted_completed[beam_width - 1])
-                    
-                    # Check if any active beam can potentially beat the worst completed beam
-                    # We need to be conservative here since active beams can still improve
-                    can_improve = False
-                    for beam in all_beams:
-                        # For active beams, we use optimistic scoring since they can still generate more tokens
-                        # The current score is a lower bound on what they could achieve
-                        current_score = sort_beams_key(beam)
-                        # Add a small margin to account for potential future improvements
-                        if current_score > worst_completed_score * 0.95:  # 5% margin for potential improvement
-                            can_improve = True
-                            break
-                    
-                    if not can_improve:
-                        break
-            
             if len(all_beams) == 0:
                 break
 
@@ -199,21 +175,22 @@ class EngineClient(ABC):
                             mm_processor_kwargs=current_beam.mm_processor_kwargs
                         )
                         
-                        # Enhanced EOS handling
+                        # Enhanced EOS handling - process EOS for each beam
                         if eos_config.is_eos_token(token_id) and not ignore_eos:
                             # Check minimum token requirement (only count generated tokens, not prompt)
                             generated_tokens = len(new_beam.tokens) - tokenized_length
                             if generated_tokens >= min_tokens:
+                                # Mark beam as finished and add to completed
                                 new_beam.finish_reason = "stop"
                                 new_beam.stop_reason = token_id
                                 new_beam.is_finished = True
                                 new_beam.finished_step = current_step
-                                
                                 completed.append(new_beam)
                             else:
                                 # Continue generation even with EOS if min_tokens not met
                                 new_beams.append(new_beam)
                         else:
+                            # Non-EOS token, continue beam
                             new_beams.append(new_beam)
 
             # Sort and keep top beams

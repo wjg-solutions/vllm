@@ -548,7 +548,6 @@ class LLM:
         ignore_eos = params.ignore_eos
         length_penalty = params.length_penalty
         min_tokens = params.min_tokens
-        early_stopping = params.early_stopping
         additional_eos_token_ids = params.additional_eos_token_ids or []
 
         lora_requests = self._get_beam_search_lora_requests(
@@ -625,16 +624,6 @@ class LLM:
                 ), )
 
         for step in range(max_tokens):
-            # Check for early stopping if enabled
-            if early_stopping:
-                all_should_stop = True
-                for instance in instances:
-                    if not instance.should_early_stop(beam_width, length_penalty):
-                        all_should_stop = False
-                        break
-                if all_should_stop:
-                    break
-
             # Clean up finished beams first
             for instance in instances:
                 instance.cleanup_finished_beams()
@@ -654,15 +643,6 @@ class LLM:
                 zip(pos[:-1], pos[1:]))
 
             if len(all_beams) == 0:
-                break
-            
-            # Check if all instances have enough completed beams and no active beams
-            all_instances_done = True
-            for instance in instances:
-                if len(instance.beams) > 0 or len(instance.completed) < beam_width:
-                    all_instances_done = False
-                    break
-            if all_instances_done:
                 break
 
             # create the corresponding batch entries for prompt & optional lora
@@ -702,11 +682,13 @@ class LLM:
                                 mm_processor_kwargs=current_beam.
                                 mm_processor_kwargs)
 
-                            # Enhanced EOS handling
+                            # Enhanced EOS handling - process EOS for each beam
                             if instance.should_terminate_beam(current_beam, token_id):
+                                # Mark beam as finished due to EOS token
                                 instance.finalize_beam(new_beam, "stop")
                                 instance.add_completed_beam(new_beam)
                             else:
+                                # Continue beam (either non-EOS token or EOS ignored due to min_tokens)
                                 instance_new_beams.append(new_beam)
                 
                 # Sort and keep top beams

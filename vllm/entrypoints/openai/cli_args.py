@@ -292,16 +292,6 @@ def make_arg_parser(parser: FlexibleArgumentParser) -> FlexibleArgumentParser:
         type=int,
         default=1,
         help="Default beam width for beam search when enabled.")
-    parser.add_argument(
-        "--default-length-penalty",
-        type=float,
-        default=1.0,
-        help="Default length penalty for beam search scoring.")
-    parser.add_argument(
-        "--default-early-stopping",
-        action='store_true',
-        default=True,
-        help="Default early stopping behavior for beam search.")
 
     return parser
 

@@ -1254,15 +1254,11 @@ async def init_app_state(
     # Store beam search defaults
     state.default_use_beam_search = args.default_use_beam_search
     state.default_beam_width = args.default_beam_width
-    state.default_length_penalty = args.default_length_penalty
-    state.default_early_stopping = args.default_early_stopping
     
     # Create server_beam_defaults dictionary for serving classes
     state.server_beam_defaults = {
         'use_beam_search': args.default_use_beam_search,
         'beam_width': args.default_beam_width,
-        'length_penalty': args.default_length_penalty,
-        'early_stopping': args.default_early_stopping
     }
 
 
