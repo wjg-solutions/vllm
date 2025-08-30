@@ -229,7 +229,7 @@ def detect_eos_tokens_from_tokenizer(tokenizer) -> EOSTokenConfig:
         for token, token_id in vocab.items():
             if any(
                 eos_pattern in token.lower()
-                for eos_pattern in ["</s>", "<eos>", "<|end|>"]
+                for eos_pattern in ["<|endoftext|>","</s>", "<eos>", "<|end|>"]
             ):
                 additional_eos.add(token_id)
 
