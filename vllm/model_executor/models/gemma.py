@@ -18,6 +18,7 @@
 """Inference-only Gemma model compatible with HuggingFace weights."""
 from collections.abc import Iterable
 from functools import cache
+from itertools import islice
 from typing import Optional, Union
 
 import torch
@@ -281,7 +282,9 @@ class GemmaModel(nn.Module):
         # data type such as bfloat16, not float32.
         # See https://github.com/huggingface/transformers/pull/29402
         normalizer = self.config.hidden_size**0.5
-        self.register_buffer("normalizer", torch.tensor(normalizer))
+        self.register_buffer("normalizer",
+                             torch.tensor(normalizer),
+                             persistent=False)
         self.make_empty_intermediate_tensors = (
             make_empty_intermediate_tensors_factory(
                 ["hidden_states", "residual"], config.hidden_size))
@@ -306,7 +309,7 @@ class GemmaModel(nn.Module):
         else:
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
-        for layer in self.layers[self.start_layer:self.end_layer]:
+        for layer in islice(self.layers, self.start_layer, self.end_layer):
             hidden_states, residual = layer(
                 positions,
                 hidden_states,

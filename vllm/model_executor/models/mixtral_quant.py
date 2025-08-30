@@ -24,6 +24,7 @@
 # limitations under the License.
 """Inference-only Mixtral model."""
 from collections.abc import Iterable
+from itertools import islice
 from typing import Optional, Union
 
 import numpy as np
@@ -114,9 +115,9 @@ class MixtralMoE(nn.Module):
                 f"Tensor parallel size {self.tp_size} is greater than "
                 f"the number of experts {self.num_total_experts}.")
         # Split experts equally between ranks
-        self.expert_indicies = np.array_split(range(
-            self.num_total_experts), self.tp_size)[self.rank].tolist()
-        if not self.expert_indicies:
+        self.expert_indices = np.array_split(range(self.num_total_experts),
+                                             self.tp_size)[self.rank].tolist()
+        if not self.expert_indices:
             raise ValueError(
                 f"Rank {self.rank} has no experts assigned to it.")
 
@@ -125,7 +126,7 @@ class MixtralMoE(nn.Module):
                        config.hidden_size,
                        config.intermediate_size,
                        quant_config=quant_config)
-            if idx in self.expert_indicies else None
+            if idx in self.expert_indices else None
             for idx in range(self.num_total_experts)
         ])
         self.gate = ReplicatedLinear(config.hidden_size,
@@ -146,7 +147,7 @@ class MixtralMoE(nn.Module):
         routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
 
         final_hidden_states = None
-        for expert_idx in self.expert_indicies:
+        for expert_idx in self.expert_indices:
             expert_layer = self.experts[expert_idx]
             expert_mask = (selected_experts == expert_idx)
             expert_weights = (routing_weights * expert_mask).sum(dim=-1,
@@ -346,7 +347,7 @@ class MixtralModel(nn.Module):
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
-        for layer in self.layers[self.start_layer:self.end_layer]:
+        for layer in islice(self.layers, self.start_layer, self.end_layer):
             hidden_states, residual = layer(positions, hidden_states, residual)
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({

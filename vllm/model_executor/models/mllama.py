@@ -17,7 +17,7 @@
 """PyTorch Mllama model."""
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Literal, Optional, TypedDict, Union
+from typing import Annotated, Literal, Optional, Union
 
 import numpy as np
 import torch
@@ -56,31 +56,48 @@ from vllm.model_executor.models.module_mapping import MultiModelKeys
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.inputs import (MultiModalDataDict, MultiModalEncDecInputs,
-                                    MultiModalFieldConfig, MultiModalKwargs)
+                                    MultiModalFieldConfig,
+                                    MultiModalKwargsItems)
 from vllm.multimodal.parse import (ImageProcessorItems, ImageSize,
                                    MultiModalDataItems)
 from vllm.multimodal.processing import (BaseProcessingInfo,
                                         EncDecMultiModalProcessor,
                                         PromptReplacement, PromptUpdate)
 from vllm.multimodal.profiling import BaseDummyInputsBuilder
+from vllm.utils.tensor_schema import TensorSchema, TensorShape
 
 from .clip import CLIPMLP
 from .interfaces import SupportsMultiModal, SupportsV0Only
 from .llama import LlamaDecoderLayer, LlamaMLP
-from .utils import maybe_prefix
+from .utils import AutoWeightsLoader, WeightsMapper, maybe_prefix
 
 logger = init_logger(__name__)
 
 
-class MllamaImagePixelInputs(TypedDict):
-    type: Literal["pixel_values"]
-    data: torch.Tensor
-    """Shape: """
-    """(batch_size, max_num_image, max_num_chunk, num_channel, height, width)"""
-    aspect_ratio_ids: torch.Tensor
-    """Shape: `(batch_size, max_num_image)`"""
-    aspect_ratio_mask: torch.Tensor
-    """Shape: `(batch_size, max_num_image, max_num_tiles)`"""
+class MllamaImagePixelInputs(TensorSchema):
+    """
+    Dimensions:
+        - batch_size: Batch size
+        - max_num_image: Max number of images
+        - max_num_chunk: Max number of chunks
+        - max_num_tiles: Max number of tiles per image
+        - num_channel: Number of channels
+        - height: Height
+        - width: Width
+    """
+
+    type: Literal["pixel_values"] = "pixel_values"
+
+    data: Annotated[torch.Tensor,
+                    TensorShape("batch_size", "max_num_image", "max_num_chunk",
+                                "num_channel", "height", "width")]
+
+    aspect_ratio_ids: Annotated[torch.Tensor,
+                                TensorShape("batch_size", "max_num_image")]
+
+    aspect_ratio_mask: Annotated[
+        torch.Tensor,
+        TensorShape("batch_size", "max_num_image", "max_num_tiles")]
 
 
 # TODO: support LlamaImageEmbeddingInputs
@@ -166,10 +183,14 @@ class MllamaMultiModalProcessor(EncDecMultiModalProcessor[MllamaProcessingInfo]
         prompt: Union[str, list[int]],
         mm_data: MultiModalDataDict,
         hf_processor_mm_kwargs: Mapping[str, object],
-        return_mm_hashes: bool = False,
+        tokenization_kwargs: Optional[Mapping[str, object]] = None,
+        mm_hash_overrides: Optional[dict[str, list[str]]] = None,
     ) -> MultiModalEncDecInputs:
-        mm_inputs = super().apply(prompt, mm_data, hf_processor_mm_kwargs,
-                                  return_mm_hashes)
+        mm_inputs = super().apply(prompt,
+                                  mm_data,
+                                  hf_processor_mm_kwargs,
+                                  tokenization_kwargs,
+                                  mm_hash_overrides=mm_hash_overrides)
 
         image_token_id = self.info.get_hf_config().image_token_index
         # Check that the number of image tokens in the decoder prompt matches
@@ -216,7 +237,7 @@ class MllamaMultiModalProcessor(EncDecMultiModalProcessor[MllamaProcessingInfo]
             # Set encoder prompt length based on the number of tiles.
             # This tells the block manager to allocate correct number
             # of slots for encoder tokens.
-            num_tiles = mm_inputs["mm_kwargs"]["num_tiles"]
+            num_tiles = mm_inputs["mm_kwargs"].get_data()["num_tiles"]
             decode_tiles = num_tiles[num_encode_images:num_images].sum().item()
             num_tokens = decode_tiles * token_per_chunk
             mm_inputs["encoder_prompt_token_ids"] = [image_token_id
@@ -239,6 +260,7 @@ class MllamaMultiModalProcessor(EncDecMultiModalProcessor[MllamaProcessingInfo]
         prompt: str,
         mm_data: Mapping[str, object],
         mm_kwargs: Mapping[str, object],
+        tok_kwargs: Mapping[str, object],
     ) -> BatchFeature:
         tokenizer = self.info.get_tokenizer()
         if mm_data:
@@ -247,7 +269,7 @@ class MllamaMultiModalProcessor(EncDecMultiModalProcessor[MllamaProcessingInfo]
                 for img in mm_data["images"]
             ]
             processed_outputs = super()._call_hf_processor(
-                prompt, mm_data, mm_kwargs)
+                prompt, mm_data, mm_kwargs, tok_kwargs)
             processed_outputs["num_tiles"] = torch.tensor(num_tiles)
             for k in ('pixel_values', 'aspect_ratio_ids', "aspect_ratio_mask"):
                 processed_outputs[k] = processed_outputs[k].squeeze(0)
@@ -300,7 +322,7 @@ class MllamaMultiModalProcessor(EncDecMultiModalProcessor[MllamaProcessingInfo]
         self,
         mm_items: MultiModalDataItems,
         hf_processor_mm_kwargs: Mapping[str, object],
-        out_mm_kwargs: MultiModalKwargs,
+        out_mm_kwargs: MultiModalKwargsItems,
     ) -> Sequence[PromptUpdate]:
         token_per_chunk = self.info.get_token_per_chunk_from_config()
         image_token_id = self.info.get_hf_config().image_token_index
@@ -790,6 +812,36 @@ class MllamaVisionModel(nn.Module):
                                  dim=-1)
         return hidden_state
 
+    def load_weights(self, weights: Iterable[tuple[str,
+                                                   torch.Tensor]]) -> set[str]:
+        stacked_params_mapping = [
+            # (param_name, shard_name, shard_id)
+            (".qkv_proj", ".q_proj", "q"),
+            (".qkv_proj", ".k_proj", "k"),
+            (".qkv_proj", ".v_proj", "v"),
+        ]
+        params_dict = dict(self.named_parameters())
+        updated_params: set[str] = set()
+        for name, loaded_weight in weights:
+            if 'patch_embedding._linear.weight' in name:
+                loaded_weight = loaded_weight.view(loaded_weight.shape[0], -1)
+            for (param_name, weight_name, shard_id) in stacked_params_mapping:
+                if weight_name not in name:
+                    continue
+                name = name.replace(weight_name, param_name)
+                param = params_dict[name]
+                updated_params.add(name)
+                weight_loader = param.weight_loader
+                weight_loader(param, loaded_weight, shard_id)
+                break
+            else:
+                param = params_dict.pop(name)
+                weight_loader = getattr(param, "weight_loader",
+                                        default_weight_loader)
+                weight_loader(param, loaded_weight)
+                updated_params.add(name)
+        return updated_params
+
 
 class MllamaTextRMSNorm(nn.Module):
 
@@ -1132,6 +1184,7 @@ class MllamaForCausalLM(nn.Module):
 
         config = vllm_config.model_config.hf_config.text_config
         quant_config = vllm_config.quant_config
+        self.quant_config = quant_config
 
         self.vocab_size = config.vocab_size
         self.model = MllamaTextModel(vllm_config=vllm_config,
@@ -1167,6 +1220,58 @@ class MllamaForCausalLM(nn.Module):
         )
         return hidden_states
 
+    def load_weights(self, weights: Iterable[tuple[str,
+                                                   torch.Tensor]]) -> set[str]:
+        stacked_params_mapping = [
+            # (param_name, shard_name, shard_id)
+            (".qkv_proj", ".q_proj", "q"),
+            (".qkv_proj", ".k_proj", "k"),
+            (".qkv_proj", ".v_proj", "v"),
+            (".gate_up_proj", ".gate_proj", 0),
+            (".gate_up_proj", ".up_proj", 1),
+        ]
+        params_dict = dict(self.named_parameters())
+        updated_params: set[str] = set()
+        for name, loaded_weight in weights:
+            if 'patch_embedding.weight' in name:
+                name = name.replace('patch_embedding.weight',
+                                    'patch_embedding._linear.weight')
+                loaded_weight = loaded_weight.view(loaded_weight.shape[0], -1)
+            if (self.quant_config is not None and
+                (scale_name := self.quant_config.get_cache_scale(name))):
+                # Loading kv cache quantization scales
+                param = params_dict[scale_name]
+                weight_loader = getattr(param, "weight_loader",
+                                        default_weight_loader)
+                loaded_weight = (loaded_weight if loaded_weight.dim() == 0 else
+                                 loaded_weight[0])
+                weight_loader(param, loaded_weight)
+                updated_params.add(scale_name)
+                continue
+            for (param_name, weight_name, shard_id) in stacked_params_mapping:
+                if weight_name not in name:
+                    continue
+                name = name.replace(weight_name, param_name)
+                param = params_dict[name]
+                updated_params.add(name)
+                weight_loader = param.weight_loader
+                weight_loader(param, loaded_weight, shard_id)
+                break
+            else:
+                orig_name = name
+                name = maybe_remap_kv_scale_name(name, params_dict)
+                if name is None:
+                    logger.debug("Missing name %s, orig name %s", name,
+                                 orig_name)
+                    continue
+
+                param = params_dict.pop(name)
+                weight_loader = getattr(param, "weight_loader",
+                                        default_weight_loader)
+                weight_loader(param, loaded_weight)
+                updated_params.add(name)
+        return updated_params
+
 
 @MULTIMODAL_REGISTRY.register_processor(MllamaMultiModalProcessor,
                                         info=MllamaProcessingInfo,
@@ -1177,6 +1282,26 @@ class MllamaForConditionalGeneration(nn.Module, SupportsMultiModal,
         "qkv_proj": ["q_proj", "k_proj", "v_proj"],
         "gate_up_proj": ["gate_proj", "up_proj"]
     }
+
+    hf_to_vllm_mapper = WeightsMapper(
+        orig_to_new_prefix={
+            # mapping for new names in checkpoint saved after transformers v4.52
+            "model.vision_model.": "vision_model.",
+            "model.multi_modal_projector.": "multi_modal_projector.",
+            "model.language_model.": "language_model.model.",
+            "lm_head.": "language_model.lm_head.",
+        },
+        orig_to_new_suffix={
+            "patch_embedding.weight": "patch_embedding._linear.weight",
+        },
+    )
+
+    @classmethod
+    def get_placeholder_str(cls, modality: str, i: int) -> Optional[str]:
+        if modality.startswith("image"):
+            return "<|image|>"
+
+        raise ValueError("Only image modality is supported")
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
@@ -1479,55 +1604,8 @@ class MllamaForConditionalGeneration(nn.Module, SupportsMultiModal,
 
     def load_weights(self, weights: Iterable[tuple[str,
                                                    torch.Tensor]]) -> set[str]:
-        stacked_params_mapping = [
-            # (param_name, shard_name, shard_id)
-            (".qkv_proj", ".q_proj", "q"),
-            (".qkv_proj", ".k_proj", "k"),
-            (".qkv_proj", ".v_proj", "v"),
-            (".gate_up_proj", ".gate_proj", 0),
-            (".gate_up_proj", ".up_proj", 1),
-        ]
-        params_dict = dict(self.named_parameters())
-        updated_params: set[str] = set()
-        for name, loaded_weight in weights:
-            if 'patch_embedding.weight' in name:
-                name = name.replace('patch_embedding.weight',
-                                    'patch_embedding._linear.weight')
-                loaded_weight = loaded_weight.view(loaded_weight.shape[0], -1)
-            if (self.quant_config is not None and
-                (scale_name := self.quant_config.get_cache_scale(name))):
-                # Loading kv cache quantization scales
-                param = params_dict[scale_name]
-                weight_loader = getattr(param, "weight_loader",
-                                        default_weight_loader)
-                loaded_weight = (loaded_weight if loaded_weight.dim() == 0 else
-                                 loaded_weight[0])
-                weight_loader(param, loaded_weight)
-                updated_params.add(scale_name)
-                continue
-            for (param_name, weight_name, shard_id) in stacked_params_mapping:
-                if weight_name not in name:
-                    continue
-                name = name.replace(weight_name, param_name)
-                param = params_dict[name]
-                updated_params.add(name)
-                weight_loader = param.weight_loader
-                weight_loader(param, loaded_weight, shard_id)
-                break
-            else:
-                orig_name = name
-                name = maybe_remap_kv_scale_name(name, params_dict)
-                if name is None:
-                    logger.debug("Missing name %s, orig name %s", name,
-                                 orig_name)
-                    continue
-
-                param = params_dict.pop(name)
-                weight_loader = getattr(param, "weight_loader",
-                                        default_weight_loader)
-                weight_loader(param, loaded_weight)
-                updated_params.add(name)
-        return updated_params
+        loader = AutoWeightsLoader(self)
+        return loader.load_weights(weights, mapper=self.hf_to_vllm_mapper)
 
     def get_mm_mapping(self) -> MultiModelKeys:
         """
