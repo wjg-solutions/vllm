@@ -28,6 +28,7 @@ from typing import (
     Union,
     cast,
     get_args,
+    get_origin,
 )
 
 import regex as re
@@ -127,6 +128,7 @@ else:
 
 logger = init_logger(__name__)
 DataclassInstanceT = TypeVar("DataclassInstanceT", bound=DataclassInstance)
+ConfigT = TypeVar("ConfigT", bound=ConfigType)
 
 TaskOption = Literal[
     "auto",

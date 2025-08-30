@@ -200,15 +200,15 @@ class OpenAIServingCompletion(OpenAIServing):
 
                 if request.should_use_beam_search(server_beam_defaults):
                     sampling_params = request.to_beam_search_params(
-                        default_max_tokens,
-                        self.default_sampling_params,
+                        max_tokens,
+                        self.default_sampling_params or {},
                         server_beam_defaults,
                     )
                 else:
                     sampling_params = request.to_sampling_params(
                         max_tokens,
                         self.model_config.logits_processor_pattern,
-                        self.default_sampling_params,
+                        self.default_sampling_params or {},
                     )
 
                 request_id_item = f"{request_id}-{i}"
@@ -265,7 +265,11 @@ class OpenAIServingCompletion(OpenAIServing):
         stream = (
             request.stream
             and (request.best_of is None or request.n == request.best_of)
-            and not request.use_beam_search
+            and not request.should_use_beam_search(
+                getattr(raw_request.app.state, "server_beam_defaults", None)
+                if raw_request
+                else None
+            )
         )
 
         # Streaming response

@@ -310,8 +310,13 @@ class OpenAIServingChat(OpenAIServing):
         try:
             for i, engine_prompt in enumerate(engine_prompts):
                 sampling_params: Union[SamplingParams, BeamSearchParams]
-                default_max_tokens = self.max_model_len - len(
-                    engine_prompt["prompt_token_ids"]
+                # Compute per-prompt input length and max output tokens
+                input_length = len(engine_prompt["prompt_token_ids"])
+                max_tokens = get_max_tokens(
+                    max_model_len=self.max_model_len,
+                    request=request,
+                    input_length=input_length,
+                    default_sampling_params=self.default_sampling_params or {},
                 )
                 # Get server beam defaults from app state
                 server_beam_defaults = (
@@ -322,15 +327,15 @@ class OpenAIServingChat(OpenAIServing):
 
                 if request.should_use_beam_search(server_beam_defaults):
                     sampling_params = request.to_beam_search_params(
-                        default_max_tokens,
-                        self.default_sampling_params,
+                        max_tokens,
+                        self.default_sampling_params or {},
                         server_beam_defaults,
                     )
                 else:
                     sampling_params = request.to_sampling_params(
                         max_tokens,
                         self.model_config.logits_processor_pattern,
-                        self.default_sampling_params,
+                        self.default_sampling_params or {},
                     )
 
                 self._log_inputs(
@@ -371,8 +376,15 @@ class OpenAIServingChat(OpenAIServing):
         assert len(generators) == 1
         (result_generator,) = generators
 
-        # Streaming response
-        if request.stream:
+        # Streaming response (disable streaming for beam search)
+        server_beam_defaults_for_gating = (
+            getattr(raw_request.app.state, "server_beam_defaults", None)
+            if raw_request
+            else None
+        )
+        if request.stream and not request.should_use_beam_search(
+            server_beam_defaults_for_gating
+        ):
             return self.chat_completion_stream_generator(
                 request,
                 result_generator,

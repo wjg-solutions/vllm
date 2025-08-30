@@ -1329,6 +1329,17 @@ class CompletionRequest(OpenAIBaseModel):
             else self.length_penalty
         )
 
+        # Determine max_tokens: min of context window, user request, and server limit
+        max_tokens = min(
+            val
+            for val in (
+                default_max_tokens,
+                self.max_tokens,
+                default_sampling_params.get("max_tokens", None),
+            )
+            if val is not None
+        )
+
         return BeamSearchParams(
             beam_width=n,
             max_tokens=max_tokens,
